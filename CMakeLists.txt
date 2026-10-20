@@ -49,7 +49,7 @@ juce_add_binary_data(DropperBinaryData
     HEADER_NAME BinaryData.h
     NAMESPACE BinaryData
     SOURCES
-        Source/Fonts/PressStart2P.ttf
+        Source/Fonts/Inter_Bold.ttf
 )
 
 target_sources(Dropper

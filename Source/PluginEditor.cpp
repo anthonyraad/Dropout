@@ -2,99 +2,13 @@
 
 #include "BinaryData.h"
 
-#include <windows.h>
-
 namespace {
-juce::Image pressStartTitle() {
-    const wchar_t* text = L"dropout";
-    constexpr int length = 7;
-
-    DWORD installed = 0;
-    HANDLE memoryFont = AddFontMemResourceEx(const_cast<char*>(BinaryData::PressStart2P_ttf),
-                                             static_cast<DWORD>(BinaryData::PressStart2P_ttfSize),
-                                             nullptr, &installed);
-
-    HDC screen = GetDC(nullptr);
-    HDC dc = CreateCompatibleDC(screen);
-    HFONT font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                             DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS,
-                             NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Press Start 2P");
-    auto previousFont = static_cast<HFONT>(SelectObject(dc, font));
-
-    SIZE extent{};
-    GetTextExtentPoint32W(dc, text, length, &extent);
-    const int width = juce::jmax(1, static_cast<int>(extent.cx));
-    const int height = juce::jmax(1, static_cast<int>(extent.cy));
-
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    info.bmiHeader.biWidth = width;
-    info.bmiHeader.biHeight = -height;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    void* bits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    auto previousBitmap = static_cast<HBITMAP>(SelectObject(dc, bitmap));
-
-    RECT rect{0, 0, width, height};
-    HBRUSH brush = CreateSolidBrush(RGB(255, 255, 255));
-    FillRect(dc, &rect, brush);
-    DeleteObject(brush);
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(0, 0, 0));
-    TextOutW(dc, 0, 0, text, length);
-    GdiFlush();
-
-    wchar_t face[64]{};
-    GetTextFaceW(dc, 64, face);
-    const bool rightFace = juce::String(face) == "Press Start 2P";
-
-    int minX = width;
-    int minY = height;
-    int maxX = -1;
-    int maxY = -1;
-    if (rightFace && bits != nullptr) {
-        const auto* src = static_cast<const std::uint8_t*>(bits);
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                if (src[(static_cast<std::size_t>(y * width + x) * 4)] < 128) {
-                    minX = juce::jmin(minX, x);
-                    minY = juce::jmin(minY, y);
-                    maxX = juce::jmax(maxX, x);
-                    maxY = juce::jmax(maxY, y);
-                }
-            }
-        }
-    }
-
-    juce::Image image;
-    if (maxX >= minX && maxY >= minY) {
-        const int cropW = maxX - minX + 1;
-        const int cropH = maxY - minY + 1;
-        image = juce::Image(juce::Image::ARGB, cropW, cropH, true);
-        const auto colour = DropperLookAndFeel::text();
-        juce::Image::BitmapData pixels(image, juce::Image::BitmapData::writeOnly);
-        const auto* src = static_cast<const std::uint8_t*>(bits);
-        for (int y = 0; y < cropH; ++y) {
-            for (int x = 0; x < cropW; ++x) {
-                const auto* px = src + (static_cast<std::size_t>((y + minY) * width + (x + minX)) * 4);
-                if (px[0] < 128)
-                    pixels.setPixelColour(x, y, colour);
-            }
-        }
-    }
-
-    SelectObject(dc, previousBitmap);
-    SelectObject(dc, previousFont);
-    DeleteObject(bitmap);
-    DeleteObject(font);
-    DeleteDC(dc);
-    ReleaseDC(nullptr, screen);
-    if (memoryFont != nullptr)
-        RemoveFontMemResourceEx(memoryFont);
-    return image;
+juce::Font titleFont() {
+    static const auto typeface = juce::Typeface::createSystemTypefaceFor(
+        BinaryData::Inter_Bold_ttf, static_cast<size_t>(BinaryData::Inter_Bold_ttfSize));
+    if (typeface == nullptr)
+        return DropperLookAndFeel::uiFont(22.f, true);
+    return juce::Font(juce::FontOptions(typeface).withHeight(22.f));
 }
 } // namespace
 
@@ -343,14 +257,23 @@ void DropperAudioProcessorEditor::syncModeButtons() {
     dropperValue.setColour(juce::Label::textColourId, DropperLookAndFeel::text());
 
     juce::String destroyLabel = "DESTROY";
+    float destroyProgress = 0.f;
     if (apvts.getRawParameterValue("degrade")->load() >= 0.5f) {
         const auto snap = processor.getEngine().snapshot();
-        const float ceiling = snap.valid ? snap.degradationCeiling
-                                         : apvts.getRawParameterValue("degradeAmount")->load() / 100.f;
-        const float level = snap.valid ? snap.degradation : 0.f;
+        float ceiling = apvts.getRawParameterValue("degradeAmount")->load() / 100.f;
+        float level = 0.f;
+        if (apvts.getRawParameterValue("degradeManualOn")->load() >= 0.5f)
+            level = apvts.getRawParameterValue("degradeManual")->load() / 100.f * ceiling;
+        if (snap.valid && snap.degradationEnabled) {
+            level = snap.degradation;
+            ceiling = snap.degradationCeiling;
+        }
         const bool atEnd = ceiling <= 0.001f || level >= ceiling - 0.005f;
+        destroyProgress = juce::jlimit(0.f, 1.f, level / std::max(0.001f, ceiling));
         destroyLabel = atEnd ? "DESTROYED" : "DESTROYING";
     }
+    degradeAmount.getProperties().set("destroyProgress", destroyProgress);
+    degradeAmount.repaint();
     if (degradeOnButton.getButtonText() != destroyLabel)
         degradeOnButton.setButtonText(destroyLabel);
 }
@@ -370,16 +293,9 @@ void DropperAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(DropperLookAndFeel::line());
     g.drawRoundedRectangle(card.reduced(0.5f), 2.f, 1.f);
 
-    static const juce::Image title = pressStartTitle();
-    if (title.isValid()) {
-        const int titleY = 16 + (24 - title.getHeight()) / 2;
-        g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
-        g.drawImageAt(title, 24, titleY);
-    } else {
-        g.setColour(DropperLookAndFeel::text());
-        g.setFont(DropperLookAndFeel::uiFont(18.f));
-        g.drawText("dropout", 24, 16, 220, 24, juce::Justification::centredLeft);
-    }
+    g.setColour(DropperLookAndFeel::text());
+    g.setFont(titleFont());
+    g.drawText("dropout", 24, 16, 220, 24, juce::Justification::centredLeft);
 }
 
 void DropperAudioProcessorEditor::resized() {

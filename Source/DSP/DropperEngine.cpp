@@ -39,7 +39,6 @@ struct Effective {
     double randomness = 0.0;
     double amount = 0.0;
     double degrade = 0.0;
-    double fadeChaos = 0.0;
     float mix = 1.f;
     float maxDelta = 1.f;
     std::uint64_t seed = kDefaultSeed;
@@ -78,14 +77,16 @@ void applyDegradation(Effective& e, float severity) noexcept {
     if (!(s > 0.004))
         return;
 
-    // The holes already chosen by the dropout control stay where they are.
-    // Wear lengthens those holes and pulls the shoulders tighter. The shoulder
-    // stays a rounded tape edge; it is never collapsed into a vertical cut.
+    // The holes the other controls already chose stay put. Wear stretches
+    // those holes and leaves the Fade knob's shoulders alone. The look-back
+    // has to cover the whole stretched hole, or the tail plays dry.
     e.degrade = s;
-    e.fadeChaos = std::pow(s, 0.85);
-    e.fade *= lerp(1.0, 0.2, s);
-    const double reach = std::max(e.maxDur * lerp(1.0, 1.2, s), e.maxDurEff * lerp(1.0, 2.15, s));
-    e.maxDur = std::max(e.maxDur, reach);
+    const double opened = std::pow(s, 0.72);
+    double cover = std::max(e.maxDurEff, e.minDur) * lerp(1.28, 3.2, opened);
+    if (e.wrap)
+        cover = std::min(cover, e.cell * lerp(1.05, 2.05, opened));
+    cover = std::min(cover, std::max(e.patternLength, e.minDur) * 0.92);
+    e.maxDur = std::max(e.maxDur, cover);
 }
 
 Effective makeEffective(const ScheduleContext& ctx) noexcept {
@@ -244,11 +245,6 @@ int makeEvents(std::int64_t cellIndex, const Effective& e, Event* out, int maxOu
         shaped = lerp(shaped, evenTarget, (1.0 - driftVis) * 0.85);
         double dur = e.minDur + (e.maxDurEff - e.minDur) * shaped;
         dur = clampd(dur, std::max(1.0e-5, e.minDur * 0.5), std::max(e.maxDurEff, e.minDur));
-        if (e.degrade > 0.0) {
-            const double grown = dur * lerp(1.0, 2.15, std::pow(e.degrade, 0.9));
-            const double ceiling = std::max(dur, e.maxDur * lerp(1.0, 1.2, e.degrade));
-            dur = std::min(std::max(dur, grown), ceiling);
-        }
         if (e.wrap)
             dur = std::min(dur, e.patternLength * 0.92);
 
@@ -268,22 +264,21 @@ int makeEvents(std::int64_t cellIndex, const Effective& e, Event* out, int maxOu
         if (e.wrap)
             dur = std::min(dur, e.patternLength * 0.92);
 
-        // Worn tape doesn't stretch every dropout the same way. A seeded share of
-        // the holes that are already there grow a little further as Destroy rises.
-        // Fixed mode repeats the same ones because the hash is tied to the cell.
-        if (e.degrade > 0.02) {
+        // Destroy stretches the hole Dropout, Min/Max, and Drift already chose.
+        // It never shortens one. Each cell takes a different share of the wear,
+        // and Fixed mode repeats that share because the hash is tied to the cell.
+        if (e.degrade > 0.0) {
             const double wear = clampd(e.degrade, 0.0, 1.0);
+            const double opened = std::pow(wear, 0.72);
             const double pick = hash01(e.seed, key, static_cast<std::uint64_t>(190 + f));
-            const double chance = lerp(0.2, 0.55, std::pow(wear, 0.85));
-            if (pick < chance) {
-                const double before = dur;
-                const double stretch = lerp(1.0, lerp(1.1, 1.36, pick), std::pow(wear, 0.8));
-                dur *= stretch;
-                double room = e.patternLength * 0.94;
-                if (e.wrap)
-                    room = std::min(room, e.cell * lerp(0.74, 0.96, wear));
-                dur = std::min(std::max(dur, before), std::max(room, before));
-            }
+            const double share = std::pow(clampd(pick, 0.0, 1.0), 0.65);
+            const double stretch = lerp(1.0, lerp(1.35, 2.45, share), opened);
+            const double chosen = dur;
+            const double grown = chosen * stretch;
+            double room = std::max(e.patternLength, chosen) * 0.92;
+            if (e.wrap)
+                room = std::min(room, std::max(chosen, e.cell * lerp(1.0, 1.9, opened)));
+            dur = std::min(std::max(grown, chosen), std::max(room, chosen));
         }
 
         const double span = std::max(0.0, e.cell * 0.92);
@@ -302,23 +297,8 @@ int makeEvents(std::int64_t cellIndex, const Effective& e, Event* out, int maxOu
         const double tapeEdge = secToUnit(kMinEdgeSec, e);
         const double stitch = secToUnit(kStitchSec, e);
         // Long holes take the slow tape shoulder. A short stutter only needs a
-        // cosine long enough to avoid a step. Heavy wear never keeps that short
-        // cosine: the hole grows until a full shoulder fits inside it.
+        // cosine long enough to avoid a step. Destroy does not change this.
         double shoulder = dur >= tapeEdge * 4.0 ? tapeEdge : stitch;
-        if (e.degrade > 0.35) {
-            const double need = tapeEdge * 2.0;
-            if (dur < need)
-                dur = std::min(need, std::max(dur, e.maxDur));
-            if (e.wrap)
-                dur = std::min(dur, e.patternLength * 0.92);
-            shoulder = tapeEdge;
-        }
-        if (e.fadeChaos > 0.15) {
-            const double cut = hash01(e.seed, key, static_cast<std::uint64_t>(110 + f));
-            const double tighten = cut * e.fadeChaos;
-            fadeIn = lerp(fadeIn, shoulder, tighten);
-            fadeOut = lerp(fadeOut, shoulder, tighten);
-        }
         fadeIn = std::max(fadeIn, shoulder);
         fadeOut = std::max(fadeOut, shoulder);
         // Keep a held mute in the middle. The fades can grow with the hole,

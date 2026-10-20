@@ -63,6 +63,18 @@ void DropperLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w
         g.strokePath(value, juce::PathStrokeType(stroke, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
     }
 
+    if (endKnob) {
+        const float progress = juce::jlimit(
+            0.f, 1.f, static_cast<float>(slider.getProperties().getWithDefault("destroyProgress", 0.0)));
+        if (progress > 0.004f && angle > rotaryStartAngle + 0.004f) {
+            juce::Path filled;
+            filled.addCentredArc(centre.x, centre.y, arcRadius, arcRadius, 0.f, rotaryStartAngle,
+                                 rotaryStartAngle + progress * (angle - rotaryStartAngle), true);
+            g.setColour(accent());
+            g.strokePath(filled, juce::PathStrokeType(stroke, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
+        }
+    }
+
     if (bipolar) {
         const auto tip = centre.getPointOnCircumference(radius - 1.f, origin);
         const auto root = centre.getPointOnCircumference(radius - 9.f, origin);
